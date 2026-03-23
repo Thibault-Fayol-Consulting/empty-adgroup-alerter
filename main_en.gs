@@ -1,33 +1,88 @@
 /**
  * --------------------------------------------------------------------------
- * empty-adgroup-alerter - Google Ads Script for SMBs
+ * Empty Ad Group Alerter — Google Ads Script
  * --------------------------------------------------------------------------
- * Author: Thibault Fayol - Consultant SEA PME
+ * Scans all enabled ad groups for a common misconfiguration: active
+ * keywords but zero active ads. These "zombie" ad groups waste budget
+ * on clicks that can never show an ad. Optionally pauses them and
+ * sends an email alert.
+ *
+ * Author:  Thibault Fayol — Consultant SEA PME
  * Website: https://thibaultfayol.com
  * License: MIT
  * --------------------------------------------------------------------------
  */
-var CONFIG = { TEST_MODE: true, EMAIL: "contact@domain.com" };
+
+var CONFIG = {
+  TEST_MODE: true,                      // true = log only, false = pause ad groups + send email
+  EMAIL: 'contact@domain.com',          // Alert recipient
+  PAUSE_EMPTY: true                     // true = pause empty ad groups when TEST_MODE is false
+};
+
 function main() {
-    Logger.log("Scanning out-of-sync Ad Groups (Active Keywords but No Active Ads)...");
-    var agIter = AdsApp.adGroups().withCondition("Status = ENABLED").withCondition("CampaignStatus = ENABLED").get();
+  try {
+    Logger.log('Scanning for ad groups with active keywords but no active ads...');
+
+    var agIter = AdsApp.adGroups()
+      .withCondition('Status = ENABLED')
+      .withCondition('CampaignStatus = ENABLED')
+      .get();
+
     var emptyGroups = [];
-    
-    while(agIter.hasNext()) {
-        var ag = agIter.next();
-        var numKeywords = ag.keywords().withCondition("Status = ENABLED").get().totalNumEntities();
-        var numAds = ag.ads().withCondition("Status = ENABLED").get().totalNumEntities();
-        
-        if (numKeywords > 0 && numAds === 0) {
-            var msg = "Campaign: " + ag.getCampaign().getName() + " > AdGroup: " + ag.getName();
-            Logger.log("Empty AdGroup Found: " + msg);
-            emptyGroups.push(msg);
-            if (!CONFIG.TEST_MODE) ag.pause();
+    var totalScanned = 0;
+
+    while (agIter.hasNext()) {
+      var ag = agIter.next();
+      totalScanned++;
+
+      var numKeywords = ag.keywords()
+        .withCondition('Status = ENABLED')
+        .get()
+        .totalNumEntities();
+
+      var numAds = ag.ads()
+        .withCondition('Status = ENABLED')
+        .get()
+        .totalNumEntities();
+
+      if (numKeywords > 0 && numAds === 0) {
+        var info = {
+          campaign: ag.getCampaign().getName(),
+          adGroup: ag.getName(),
+          keywords: numKeywords
+        };
+
+        Logger.log('Empty: ' + info.campaign + ' > ' + info.adGroup +
+                    ' (' + info.keywords + ' active keywords, 0 ads)');
+
+        if (!CONFIG.TEST_MODE && CONFIG.PAUSE_EMPTY) {
+          ag.pause();
+          Logger.log('  -> Paused');
         }
+
+        emptyGroups.push(info);
+      }
     }
-    
-    if (emptyGroups.length > 0 && !CONFIG.TEST_MODE && CONFIG.EMAIL !== "contact@domain.com") {
-        MailApp.sendEmail(CONFIG.EMAIL, "Google Ads Alert: Empty Ad Groups Paused", "The following Ad Groups had active keywords but no active ads:\n\n" + emptyGroups.join("\n"));
+
+    Logger.log('Scanned ' + totalScanned + ' ad groups. Found ' +
+               emptyGroups.length + ' empty (keywords but no ads).');
+
+    if (emptyGroups.length > 0 && !CONFIG.TEST_MODE && CONFIG.EMAIL !== 'contact@domain.com') {
+      var lines = emptyGroups.map(function(g) {
+        return g.campaign + ' > ' + g.adGroup + ' (' + g.keywords + ' keywords)';
+      });
+      var action = CONFIG.PAUSE_EMPTY ? 'paused' : 'flagged (not paused)';
+      MailApp.sendEmail(CONFIG.EMAIL,
+        'Empty Ad Groups: ' + emptyGroups.length + ' ad group(s) ' + action,
+        'The following ad groups had active keywords but no active ads (' + action + '):\n\n' +
+        lines.join('\n') +
+        '\n\nTip: For large accounts (500+ ad groups), schedule this script weekly to avoid timeout.');
+      Logger.log('Alert email sent to ' + CONFIG.EMAIL);
     }
-    Logger.log("Scan complete. Found " + emptyGroups.length + " issues.");
+  } catch (e) {
+    Logger.log('FATAL ERROR: ' + e.message);
+    if (!CONFIG.TEST_MODE && CONFIG.EMAIL !== 'contact@domain.com') {
+      MailApp.sendEmail(CONFIG.EMAIL, 'Empty Ad Group Alerter — Script Error', e.message);
+    }
+  }
 }
